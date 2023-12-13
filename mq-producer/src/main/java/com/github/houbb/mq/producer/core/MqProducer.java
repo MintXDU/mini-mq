@@ -14,6 +14,7 @@ import com.github.houbb.mq.common.support.invoke.IInvokeService;
 import com.github.houbb.mq.common.support.invoke.impl.InvokeService;
 import com.github.houbb.mq.common.support.status.IStatusManager;
 import com.github.houbb.mq.common.support.status.StatusManager;
+import com.github.houbb.mq.common.util.CuratorUtils;
 import com.github.houbb.mq.producer.api.IMqProducer;
 import com.github.houbb.mq.producer.constant.ProducerConst;
 import com.github.houbb.mq.producer.constant.ProducerRespCode;
@@ -22,6 +23,7 @@ import com.github.houbb.mq.producer.dto.SendResult;
 import com.github.houbb.mq.producer.support.broker.IProducerBrokerService;
 import com.github.houbb.mq.producer.support.broker.ProducerBrokerConfig;
 import com.github.houbb.mq.producer.support.broker.ProducerBrokerService;
+import org.apache.curator.framework.CuratorFramework;
 
 import java.util.List;
 
@@ -103,6 +105,14 @@ public class MqProducer extends Thread implements IMqProducer {
      * @since 0.1.4
      */
     private String appSecret;
+
+    public MqProducer() {
+        // 1. 从 zk 获取目前的主 broker 所在端口
+        CuratorFramework zkClient = CuratorUtils.getZkClient();
+        String masterBrokerPort = CuratorUtils.getChildNodes(zkClient, "master-broker-port");
+        // 2. 配置要通信的主 broker 的地址
+        brokerAddress = "127.0.0.1:" + masterBrokerPort;
+    }
 
     public MqProducer appKey(String appKey) {
         this.appKey = appKey;

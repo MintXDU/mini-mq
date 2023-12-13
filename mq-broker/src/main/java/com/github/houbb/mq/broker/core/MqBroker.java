@@ -22,6 +22,7 @@ import com.github.houbb.mq.broker.support.valid.IBrokerRegisterValidService;
 import com.github.houbb.mq.common.resp.MqException;
 import com.github.houbb.mq.common.support.invoke.IInvokeService;
 import com.github.houbb.mq.common.support.invoke.impl.InvokeService;
+import com.github.houbb.mq.common.util.CuratorUtils;
 import com.github.houbb.mq.common.util.DelimiterUtil;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
@@ -29,6 +30,7 @@ import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.DelimiterBasedFrameDecoder;
+import org.apache.curator.framework.CuratorFramework;
 
 /**
  * @author binbin.hou
@@ -102,6 +104,24 @@ public class MqBroker extends Thread implements IMqBroker {
      */
     private IBrokerRegisterValidService brokerRegisterValidService = new BrokerRegisterValidService();
 
+    /**
+     * Broker 名称
+     */
+    private String brokerName = "broker1";
+
+    public MqBroker () {
+
+    }
+
+    public MqBroker (String brokerName, int port) {
+        this.brokerName = brokerName;
+        this.port = port;
+
+        // 向 zk 注册 master-broker
+        CuratorFramework zkClient = CuratorUtils.getZkClient();
+        CuratorUtils.createPersistNode(zkClient, "/my-mq/master-broker-port", String.valueOf(port));
+    }
+
     public MqBroker port(int port) {
         this.port = port;
         return this;
@@ -167,7 +187,7 @@ public class MqBroker extends Thread implements IMqBroker {
     @Override
     public void run() {
         // 启动服务端
-        log.info("MQ 中间人开始启动服务端 port: {}", port);
+        log.info("MQ 中间人 {} 开始启动，监听 port: {}", brokerName, port);
 
         EventLoopGroup bossGroup = new NioEventLoopGroup();
         EventLoopGroup workerGroup = new NioEventLoopGroup();
@@ -192,12 +212,12 @@ public class MqBroker extends Thread implements IMqBroker {
 
             // 绑定端口，开始接收进来的链接
             ChannelFuture channelFuture = serverBootstrap.bind(port).syncUninterruptibly();
-            log.info("MQ 中间人启动完成，监听【" + port + "】端口");
+            log.info("MQ 中间人" + brokerName + "启动完成，监听【" + port + "】端口");
 
             channelFuture.channel().closeFuture().syncUninterruptibly();
-            log.info("MQ 中间人关闭完成");
+            log.info("MQ 中间人" + brokerName + "关闭完成");
         } catch (Exception e) {
-            log.error("MQ 中间人启动异常", e);
+            log.error("MQ 中间人" + brokerName + "启动异常", e);
             throw new MqException(BrokerRespCode.RPC_INIT_FAILED);
         } finally {
             workerGroup.shutdownGracefully();

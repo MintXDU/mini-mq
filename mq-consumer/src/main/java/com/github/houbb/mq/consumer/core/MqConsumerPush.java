@@ -14,6 +14,7 @@ import com.github.houbb.mq.common.support.invoke.IInvokeService;
 import com.github.houbb.mq.common.support.invoke.impl.InvokeService;
 import com.github.houbb.mq.common.support.status.IStatusManager;
 import com.github.houbb.mq.common.support.status.StatusManager;
+import com.github.houbb.mq.common.util.CuratorUtils;
 import com.github.houbb.mq.consumer.api.IMqConsumer;
 import com.github.houbb.mq.consumer.api.IMqConsumerListener;
 import com.github.houbb.mq.consumer.constant.ConsumerConst;
@@ -23,6 +24,7 @@ import com.github.houbb.mq.consumer.support.broker.ConsumerBrokerService;
 import com.github.houbb.mq.consumer.support.broker.IConsumerBrokerService;
 import com.github.houbb.mq.consumer.support.listener.IMqListenerService;
 import com.github.houbb.mq.consumer.support.listener.MqListenerService;
+import org.apache.curator.framework.CuratorFramework;
 
 /**
  * 推送消费策略
@@ -122,6 +124,14 @@ public class MqConsumerPush extends Thread implements IMqConsumer  {
      * @since 0.1.4
      */
     protected String appSecret;
+
+    public MqConsumerPush() {
+        // 1. 从 zk 获取目前的主 broker 所在端口
+        CuratorFramework zkClient = CuratorUtils.getZkClient();
+        String masterBrokerPort = CuratorUtils.getChildNodes(zkClient, "master-broker-port");
+        // 2. 配置要通信的主 broker 的地址
+        brokerAddress = "127.0.0.1:" + masterBrokerPort;
+    }
 
     public String appKey() {
         return appKey;
