@@ -47,10 +47,14 @@ import io.netty.handler.codec.DelimiterBasedFrameDecoder;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import org.apache.curator.framework.CuratorFramework;
+import org.apache.curator.framework.recipes.cache.PathChildrenCache;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+
 
 /**
  * @author binbin.hou
@@ -137,7 +141,7 @@ public class MqBroker extends Thread implements IMqBroker {
     /**
      * 副本 broker 的 channelFuture
      */
-    private RpcChannelFuture channelFuture;
+    private RpcChannelFuture rpcChannelFuture;
 
     /**
      * true 表示本 Broker 为主 broker
@@ -154,7 +158,10 @@ public class MqBroker extends Thread implements IMqBroker {
 
         // 向 zk 注册 master-broker
         CuratorFramework zkClient = CuratorUtils.getZkClient();
-        this.isMaster = CuratorUtils.createPersistNode(zkClient, "/my-mq/master-broker-port", String.valueOf(port));
+        this.isMaster = CuratorUtils.createEphemeralNode(zkClient, "/my-mq/master-broker-port", String.valueOf(port));
+        if (!this.isMaster) {
+            this.registerWatcher(zkClient);
+        }
     }
 
     public MqBroker port(int port) {
@@ -323,7 +330,7 @@ public class MqBroker extends Thread implements IMqBroker {
             rpcChannelFuture.setPort(port);
             rpcChannelFuture.setWeight(1);
 
-            this.channelFuture = rpcChannelFuture;
+            this.rpcChannelFuture = rpcChannelFuture;
         } catch (Exception exception) {
             log.error("注册到 broker 服务端异常", exception);
         }
@@ -354,7 +361,7 @@ public class MqBroker extends Thread implements IMqBroker {
         log.info("[BROKER_PULL] BROKER 副本同步队列消息", JSON.toJSON(req));
 
         try {
-            Channel channel = channelFuture.getChannelFuture().channel();
+            Channel channel = rpcChannelFuture.getChannelFuture().channel();
             callServer(channel, req, null);
         } catch (Exception exception) {
             log.error("[BROKER_PULL] BROKER 副本同步队列消息请求异常", exception);
@@ -389,4 +396,42 @@ public class MqBroker extends Thread implements IMqBroker {
         return null;
     }
 
+    private void registerWatcher(CuratorFramework zkClient) {
+        final String brokerPath = "/my-mq";
+        PathChildrenCache pathChildrenCache = new PathChildrenCache(zkClient, brokerPath, true);
+        try {
+            pathChildrenCache.start();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        PathChildrenCacheListener pathChildrenCacheListener = (curatorFramework, pathChildrenCacheEvent) -> {
+            if (pathChildrenCacheEvent.getType() == PathChildrenCacheEvent.Type.CHILD_REMOVED) {
+                String deletedPath = pathChildrenCacheEvent.getData().getPath();
+                System.out.println("节点被删除：" + deletedPath);
+
+                // 向 zk 注册 master-broker
+                isMaster = CuratorUtils.createEphemeralNode(zkClient, "/my-mq/master-broker-port", String.valueOf(port));
+
+                if (isMaster) {
+                    // 如果本 broker 成功注册为 master-broker
+                    Channel channel = rpcChannelFuture.getChannelFuture().channel();
+                    channel.close();
+
+                    // 停止心跳拉取消息
+                    scheduledExecutorService.shutdown();
+
+                    startNettyServer();
+                } else {
+                    // 如果本 broker 没注册为 master-broker
+                    Channel channel = rpcChannelFuture.getChannelFuture().channel();
+                    channel.close();
+
+                    String masterBrokerPort = CuratorUtils.getChildNodes(zkClient, "master-broker-port");
+                    startNettyClient(masterBrokerPort);
+                }
+            }
+        };
+        pathChildrenCache.getListenable().addListener(pathChildrenCacheListener);
+    }
 }
