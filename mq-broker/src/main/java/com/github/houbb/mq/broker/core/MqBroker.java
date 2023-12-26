@@ -1,5 +1,7 @@
 package com.github.houbb.mq.broker.core;
 
+import com.alibaba.fastjson.JSON;
+import com.github.houbb.id.core.util.IdHelper;
 import com.github.houbb.load.balance.api.ILoadBalance;
 import com.github.houbb.load.balance.api.impl.LoadBalances;
 import com.github.houbb.log.integration.core.Log;
@@ -10,6 +12,7 @@ import com.github.houbb.mq.broker.api.IMqBroker;
 import com.github.houbb.mq.broker.constant.BrokerConst;
 import com.github.houbb.mq.broker.constant.BrokerRespCode;
 import com.github.houbb.mq.broker.dto.consumer.ConsumerSubscribeBo;
+import com.github.houbb.mq.broker.handler.MqBrokerClientHandler;
 import com.github.houbb.mq.broker.handler.MqBrokerHandler;
 import com.github.houbb.mq.broker.support.api.LocalBrokerConsumerService;
 import com.github.houbb.mq.broker.support.api.LocalBrokerProducerService;
@@ -19,18 +22,35 @@ import com.github.houbb.mq.broker.support.push.BrokerPushService;
 import com.github.houbb.mq.broker.support.push.IBrokerPushService;
 import com.github.houbb.mq.broker.support.valid.BrokerRegisterValidService;
 import com.github.houbb.mq.broker.support.valid.IBrokerRegisterValidService;
+import com.github.houbb.mq.common.constant.MethodType;
+import com.github.houbb.mq.common.dto.req.MqCommonReq;
+import com.github.houbb.mq.common.dto.req.MqPullReq;
+import com.github.houbb.mq.common.dto.resp.MqCommonResp;
 import com.github.houbb.mq.common.resp.MqException;
+import com.github.houbb.mq.common.rpc.RpcChannelFuture;
+import com.github.houbb.mq.common.rpc.RpcMessageDto;
 import com.github.houbb.mq.common.support.invoke.IInvokeService;
 import com.github.houbb.mq.common.support.invoke.impl.InvokeService;
+import com.github.houbb.mq.common.util.ChannelUtil;
 import com.github.houbb.mq.common.util.CuratorUtils;
 import com.github.houbb.mq.common.util.DelimiterUtil;
+import com.github.houbb.heaven.util.net.NetUtil;
+
+import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.DelimiterBasedFrameDecoder;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
 import org.apache.curator.framework.CuratorFramework;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author binbin.hou
@@ -87,6 +107,11 @@ public class MqBroker extends Thread implements IMqBroker {
     private long respTimeoutMills = 5000;
 
     /**
+     * 拉取 MQ 定时任务
+     */
+    private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
+
+    /**
      * 负载均衡
      * @since 0.0.7
      */
@@ -109,6 +134,16 @@ public class MqBroker extends Thread implements IMqBroker {
      */
     private String brokerName = "broker1";
 
+    /**
+     * 副本 broker 的 channelFuture
+     */
+    private RpcChannelFuture channelFuture;
+
+    /**
+     * true 表示本 Broker 为主 broker
+     */
+    private boolean isMaster;
+
     public MqBroker () {
 
     }
@@ -119,7 +154,7 @@ public class MqBroker extends Thread implements IMqBroker {
 
         // 向 zk 注册 master-broker
         CuratorFramework zkClient = CuratorUtils.getZkClient();
-        CuratorUtils.createPersistNode(zkClient, "/my-mq/master-broker-port", String.valueOf(port));
+        this.isMaster = CuratorUtils.createPersistNode(zkClient, "/my-mq/master-broker-port", String.valueOf(port));
     }
 
     public MqBroker port(int port) {
@@ -167,7 +202,7 @@ public class MqBroker extends Thread implements IMqBroker {
         return this;
     }
 
-    private ChannelHandler initChannelHandler() {
+    private ChannelHandler initServerChannelHandler() {
         registerConsumerService.loadBalance(this.loadBalance);
 
         MqBrokerHandler handler = new MqBrokerHandler();
@@ -184,11 +219,47 @@ public class MqBroker extends Thread implements IMqBroker {
         return handler;
     }
 
+    private ChannelHandler initClientChannelHandler() {
+        final ByteBuf delimiterBuf = DelimiterUtil.getByteBuf(DelimiterUtil.DELIMITER);
+
+        final MqBrokerClientHandler mqBrokerClientHandler = new MqBrokerClientHandler();
+
+        ChannelHandler handler = new ChannelInitializer<Channel>() {
+
+            @Override
+            protected void initChannel(Channel channel) throws Exception {
+                channel.pipeline()
+                        .addLast(new DelimiterBasedFrameDecoder(DelimiterUtil.LENGTH, delimiterBuf))
+                        .addLast(mqBrokerClientHandler);
+            }
+        };
+
+        return handler;
+    }
+
     @Override
     public void run() {
-        // 启动服务端
-        log.info("MQ 中间人 {} 开始启动，监听 port: {}", brokerName, port);
+        CuratorFramework zkClient = CuratorUtils.getZkClient();
+        String masterBrokerPort = CuratorUtils.getChildNodes(zkClient, "master-broker-port");
 
+        if (isMaster) {
+            // broker 为主 broker，启动为服务端。
+            log.info("主 MQ 中间人 {} 开始启动，监听 port: {}", brokerName, port);
+
+            startNettyServer();
+        } else {
+            // broker 为 broker 副本，启动为客户端。
+            log.info("副本 MQ 中间人 {} 开始启动，连接主 broker 服务器端口 port: {}", brokerName, masterBrokerPort);
+
+            startNettyClient(masterBrokerPort);
+
+            // 初始化拉取
+            this.initPullMQ();
+        }
+
+    }
+
+    private void startNettyServer() {
         EventLoopGroup bossGroup = new NioEventLoopGroup();
         EventLoopGroup workerGroup = new NioEventLoopGroup();
 
@@ -202,7 +273,7 @@ public class MqBroker extends Thread implements IMqBroker {
                         protected void initChannel(Channel ch) throws Exception {
                             ch.pipeline()
                                     .addLast(new DelimiterBasedFrameDecoder(DelimiterUtil.LENGTH, delimiterBuf))
-                                    .addLast(initChannelHandler());
+                                    .addLast(initServerChannelHandler());
                         }
                     })
                     // 这个参数影响的是还没有被accept 取出的连接
@@ -223,6 +294,99 @@ public class MqBroker extends Thread implements IMqBroker {
             workerGroup.shutdownGracefully();
             bossGroup.shutdownGracefully();
         }
+    }
+
+    private void startNettyClient(String masterBrokerPort) {
+        EventLoopGroup workerGroup = new NioEventLoopGroup();
+
+        try {
+            final String address = "127.0.0.1";
+            final int port = Integer.parseInt(masterBrokerPort);
+            Bootstrap bootstrap = new Bootstrap();
+            ChannelFuture channelFuture = bootstrap.group(workerGroup)
+                    .channel(NioSocketChannel.class)
+                    .option(ChannelOption.SO_KEEPALIVE, true)
+                    .handler(new ChannelInitializer<Channel>() {
+                        @Override
+                        protected void initChannel(Channel ch) throws Exception {
+                            ch.pipeline()
+                                    .addLast(new LoggingHandler(LogLevel.INFO))
+                                    .addLast(initClientChannelHandler());
+                        }
+                    })
+                    .connect(address, port)
+                    .syncUninterruptibly();
+            log.info("启动副本 broker 完成，监听主 broker 的 address: {}, port: {}", address, port);
+            RpcChannelFuture rpcChannelFuture = new RpcChannelFuture();
+            rpcChannelFuture.setChannelFuture(channelFuture);
+            rpcChannelFuture.setAddress(address);
+            rpcChannelFuture.setPort(port);
+            rpcChannelFuture.setWeight(1);
+
+            this.channelFuture = rpcChannelFuture;
+        } catch (Exception exception) {
+            log.error("注册到 broker 服务端异常", exception);
+        }
+    }
+
+    /**
+     * 初始化拉取 MQ 操作
+     */
+    private void initPullMQ() {
+        // 5S 拉取一次
+        scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                pullMq();
+            }
+        }, 5, 5, TimeUnit.SECONDS);
+    }
+
+    public void pullMq() {
+        final MqPullReq req = new MqPullReq();
+        final String traceId = IdHelper.uuid32();
+
+        req.setTraceId(traceId);
+        req.setMethodType(MethodType.B_PULL);
+        req.setAddress(NetUtil.getLocalHost());
+        req.setPort(0);
+        req.setTime(System.currentTimeMillis());
+        log.info("[BROKER_PULL] BROKER 副本同步队列消息", JSON.toJSON(req));
+
+        try {
+            Channel channel = channelFuture.getChannelFuture().channel();
+            callServer(channel, req, null);
+        } catch (Exception exception) {
+            log.error("[BROKER_PULL] BROKER 副本同步队列消息请求异常", exception);
+        }
+    }
+
+    public <T extends MqCommonReq, R extends MqCommonResp> R callServer(Channel channel, T commonReq, Class<R> respClass) {
+        final String traceId = commonReq.getTraceId();
+        final long requestTime = System.currentTimeMillis();
+
+        RpcMessageDto rpcMessageDto = new RpcMessageDto();
+        rpcMessageDto.setTraceId(traceId);
+        rpcMessageDto.setRequestTime(requestTime);
+        rpcMessageDto.setJson(JSON.toJSONString(commonReq));
+        rpcMessageDto.setMethodType(commonReq.getMethodType());
+        rpcMessageDto.setRequest(true);
+
+        // 添加调用服务
+        invokeService.addRequest(traceId, respTimeoutMills);
+
+        // 遍历 channel
+        // 关闭当前线程，以获取对应的信息
+        // 使用序列化的方式
+        ByteBuf byteBuf = DelimiterUtil.getMessageDelimiterBuffer(rpcMessageDto);
+
+        //负载均衡获取 channel
+        channel.writeAndFlush(byteBuf);
+
+        String channelId = ChannelUtil.getChannelId(channel);
+        log.info("[BROKER_PULL] channelId {} 发送消息 {}", channelId, JSON.toJSON(rpcMessageDto));
+
+        return null;
     }
 
 }

@@ -3,6 +3,8 @@ package com.github.houbb.mq.broker.dto.persist;
 import com.github.houbb.mq.common.dto.req.MqMessage;
 import com.github.houbb.mq.common.rpc.RpcAddress;
 
+import java.io.Serializable;
+
 /**
  * @author binbin.hou
  * @since 0.0.3

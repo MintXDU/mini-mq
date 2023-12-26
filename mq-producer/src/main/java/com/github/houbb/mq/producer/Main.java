@@ -11,7 +11,7 @@ public class Main {
     public static void main(String[] args) {
         MqProducer mqProducer = new MqProducer();
         mqProducer.start();
-        String message = "HELLO MQ!";
+        String message = "HELLO MQ2!";
         MqMessage mqMessage = new MqMessage();
         mqMessage.setTopic("TOPIC");
         mqMessage.setTags(Arrays.asList("TAGA", "TAGB"));

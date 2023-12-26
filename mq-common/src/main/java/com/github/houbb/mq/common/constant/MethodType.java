@@ -96,4 +96,9 @@ public class MethodType {
      */
     public static final String P_SEND_MSG_ONE_WAY_BATCH = "P_SEND_MSG_ONE_WAY_BATCH";
 
+    /**
+     * Broker 副本拉取消息
+     */
+    public static final String B_PULL = "B_PULL";
+
 }

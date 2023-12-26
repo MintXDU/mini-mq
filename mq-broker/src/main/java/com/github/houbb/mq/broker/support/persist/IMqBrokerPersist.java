@@ -9,12 +9,17 @@ import com.github.houbb.mq.common.dto.resp.MqConsumerPullResp;
 import io.netty.channel.Channel;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * @author binbin.hou
  * @since 0.0.3
  */
 public interface IMqBrokerPersist {
+    /**
+     * 获取队列
+     */
+    Map<String, List<MqMessagePersistPut>> getMap();
 
     /**
      * 保存消息
@@ -60,4 +65,8 @@ public interface IMqBrokerPersist {
      */
     MqConsumerPullResp pull(final MqConsumerPullReq pull, final Channel channel);
 
+    /**
+     *
+     */
+    void SynchronizeMqMap(Map<String, List<MqMessagePersistPut>> masterMqMap);
 }

@@ -1,6 +1,7 @@
 package com.github.houbb.mq.broker.support.persist;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.github.houbb.heaven.util.util.CollectionUtil;
 import com.github.houbb.heaven.util.util.MapUtil;
 import com.github.houbb.heaven.util.util.regex.RegexUtil;
@@ -17,6 +18,11 @@ import com.github.houbb.mq.common.dto.resp.MqConsumerPullResp;
 import com.github.houbb.mq.common.resp.MqCommonRespCode;
 import io.netty.channel.Channel;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -37,6 +43,30 @@ public class LocalMqBrokerPersist implements IMqBrokerPersist {
      * ps: 这里只是简化实现，暂时不考虑并发等问题。
      */
     private final Map<String, List<MqMessagePersistPut>> map = new ConcurrentHashMap<>();
+
+    public LocalMqBrokerPersist() {
+        try (BufferedReader bufferedReader = new BufferedReader(new FileReader("mq-data.json"))) {
+            String stringMqMap = bufferedReader.readLine();
+            Map<String, List<MqMessagePersistPut>> mqMap = JSON.parseObject(stringMqMap, Map.class);
+
+            // 清空本地的消息队列
+            map.clear();
+
+            // 将磁盘里持久化过的 mq 赋值给本地消息队列
+            for (Map.Entry<String, List<MqMessagePersistPut>> entry: mqMap.entrySet()) {
+                String key = entry.getKey();
+                List<MqMessagePersistPut> value = entry.getValue();
+                map.put(key, value);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public Map<String, List<MqMessagePersistPut>> getMap() {
+        return this.map;
+    }
 
     //1. 接收
     //2. 持久化
@@ -59,6 +89,15 @@ public class LocalMqBrokerPersist implements IMqBrokerPersist {
 
         // 放入元素
         MapUtil.putToListMap(map, topic, put);
+
+        String mqMapJson = JSON.toJSONString(map);
+
+        // 存储 mqMap 到本地文件中
+        try (FileWriter fileWriter = new FileWriter("mq-data.json")) {
+            fileWriter.write(mqMapJson);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
@@ -158,6 +197,21 @@ public class LocalMqBrokerPersist implements IMqBrokerPersist {
         resp.setRespMessage(MqCommonRespCode.SUCCESS.getMsg());
         resp.setList(resultList);
         return resp;
+    }
+
+    @Override
+    public void SynchronizeMqMap(Map<String, List<MqMessagePersistPut>> masterMqMap) {
+        // 清空本地的消息队列
+        map.clear();
+
+        // 将主 broker 的队列赋值给本地消息队列
+        for (Map.Entry<String, List<MqMessagePersistPut>> entry: masterMqMap.entrySet()) {
+            String key = entry.getKey();
+            List<MqMessagePersistPut> value = entry.getValue();
+            map.put(key, value);
+        }
+
+        log.info("[BROKER CLIENT] 同步消息队列 {}", map);
     }
 
     private boolean isEnableStatus(final MqMessagePersistPut persistPut) {

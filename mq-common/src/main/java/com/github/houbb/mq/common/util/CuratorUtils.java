@@ -45,17 +45,20 @@ public final class CuratorUtils {
         return zkClient;
     }
 
-    public static void createPersistNode(CuratorFramework zkClient, String path, String brokerName) {
+    public static boolean createPersistNode(CuratorFramework zkClient, String path, String brokerName) {
         try {
             if (zkClient.checkExists().forPath(path) != null) {
                 log.info("The node already exists. The node is: [{}/{}]", path, CuratorUtils.getChildNodes(zkClient, "master-broker-port"));
+                return false;
             } else {
                 zkClient.create().creatingParentsIfNeeded().withMode(CreateMode.PERSISTENT).forPath(path, brokerName.getBytes());
                 log.info("The node was created successfully. The node is: [{}/{}]", path, CuratorUtils.getChildNodes(zkClient, "master-broker-port"));
+                return true;
             }
         } catch (Exception e) {
             log.error("create persistent node for path [{}] fail", path);
         }
+        return false;
     }
 
     public static void deleteNode(CuratorFramework zkClient, String path) {

@@ -2,6 +2,7 @@ package com.github.houbb.mq.broker.handler;
 
 import com.alibaba.fastjson.JSON;
 import com.github.houbb.heaven.util.lang.StringUtil;
+import com.github.houbb.heaven.util.util.CharsetUtil;
 import com.github.houbb.heaven.util.util.CollectionUtil;
 import com.github.houbb.log.integration.core.Log;
 import com.github.houbb.log.integration.core.LogFactory;
@@ -32,12 +33,18 @@ import com.github.houbb.mq.common.support.invoke.IInvokeService;
 import com.github.houbb.mq.common.util.ChannelUtil;
 import com.github.houbb.mq.common.util.DelimiterUtil;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectOutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+
+import static com.github.houbb.mq.common.util.DelimiterUtil.DELIMITER;
 
 /**
  * @author binbin.hou
@@ -150,14 +157,25 @@ public class MqBrokerHandler extends SimpleChannelInboundHandler {
         }
 
         if (rpcMessageDto.isRequest()) {
-            MqCommonResp commonResp = this.dispatch(rpcMessageDto, ctx);
+            if (MethodType.B_PULL.equals(rpcMessageDto.getMethodType())) {
+                final String id = ctx.channel().id().asLongText();
 
-            if(commonResp == null) {
-                log.debug("当前消息为 null，忽略处理。");
-                return;
+                Map<String, List<MqMessagePersistPut>> mqMap = mqBrokerPersist.getMap();
+                String mqMapJson = JSON.toJSONString(mqMap);
+                String mqMapJsonDelimiter = mqMapJson + DELIMITER;
+                ctx.writeAndFlush(Unpooled.copiedBuffer(mqMapJsonDelimiter.getBytes()));
+
+                log.info("[MASTER BROKER] channel {} response {}", id, JSON.toJSON(mqMap));
+            } else {
+                MqCommonResp commonResp = this.dispatch(rpcMessageDto, ctx);
+
+                if(commonResp == null) {
+                    log.debug("当前消息为 null，忽略处理。");
+                    return;
+                }
+
+                writeResponse(rpcMessageDto, commonResp, ctx);
             }
-
-            writeResponse(rpcMessageDto, commonResp, ctx);
         } else {
             final String traceId = rpcMessageDto.getTraceId();
 
